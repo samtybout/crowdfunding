@@ -12,6 +12,7 @@ library(ggplot2)
 library(lubridate)
 library(stringr)
 library(tidyr)
+library(rjags)
 ```
 
 Data from:
@@ -210,11 +211,10 @@ ggplot(funding %>% filter(platform == "Kickstarter", raised_frac < 3), aes(x = r
 ```
 
 
-```{r modeling}
+```{r JAGS}
+data_jags = list(raised_frac = (funding %>% filter(platform == "Indiegogo"))$raised_frac,
+                 goal = (funding %>% filter(platform == "Indiegogo"))$goal_usd)
 
-ggplot(data = ig_data %>% slice_sample(n=5000), aes(x = goal_usd, y = raised_frac, color = category_broad)) +
-  geom_point(alpha = 0.2) +
-  scale_x_log10() + scale_y_log10()
-  
+model = jags.model("jags_model.txt", data = data_jags, n.chains = 3)
 
 ```

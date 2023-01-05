@@ -1,0 +1,17 @@
+model {
+  for (i in 1:length(raised_frac)){
+    funding_base[i] ~ dexp(rate_base + rate_goal*log(goal[i]))
+    funding_push[i] ~ dexp(rate_push + rate_push_goal*log(goal[i]))
+    push_exists[i] ~ dbern(p_push[i])
+    p_push[i] <- 1/(1+exp(-1*(funding_base[i]+beta)))
+    
+    raised_frac[i] = (1-push_exists[i])*funding_base[i] + push_exists[i]*funding_push[i]
+  }
+  
+  rate_base ~ dnorm(5,1)
+  rate_goal ~ dnorm(0,1)
+  rate_push ~ dnorm(5,1)
+  rate_push_goal ~ dnorm(0,1)
+  beta ~ dnorm(0,1)
+  
+}
