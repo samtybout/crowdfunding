@@ -207,8 +207,6 @@ ggplot(funding %>% filter(raised_frac < 5, goal_usd >= 10, goal_usd < 10000000),
 ggplot(funding %>% filter(platform == "Kickstarter", raised_frac < 3), aes(x = raised_frac)) + 
   geom_histogram(binwidth = 0.05)
   
-
-
 ```
 
 
