@@ -1,0 +1,222 @@
+---
+title: "main"
+output: html_document
+date: "2022-12-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(lubridate)
+library(stringr)
+library(tidyr)
+```
+
+Data from:
+Indiegogo projects
+https://webrobots.io/indiegogo-dataset/
+Kickstarter projects
+https://www.icpsr.umich.edu/web/NADAC/studies/38050
+Currency exchange rates
+https://www.imf.org/external/np/fin/ert/GUI/Pages/ReportOptions.aspx
+
+```{r filter_ig_data}
+
+ig_data = read_csv("data/Indiegogo.csv")
+
+
+ig_data = ig_data %>% 
+  select(category, close_date, currency, funds_raised_amount, funds_raised_percent, open_date, project_id, project_type, tags, title) %>% 
+  mutate(close_date = as.Date(sub("T.*","",close_date)),
+         open_date = as.Date(sub("T.*","",open_date)),
+         goal = funds_raised_amount/funds_raised_percent,
+         raised_frac = funds_raised_percent,
+         state = if_else(funds_raised_percent >= 1, "successful", "failed"))
+
+```
+
+```{r clean_ks_data}
+
+ks_data = read_csv("data/ICPSR_ks.csv")
+
+ks_data = ks_data %>% 
+  mutate(project_id = PID,
+         category = CATEGORY,
+         category_id = CATEGORY_ID,
+         subcategory = SUBCATEGORY,
+         subcategory_id = SUBCATEGORY_ID,
+         open_date = mdy(LAUNCHED_DATE),
+         close_date = mdy(DEADLINE_DATE),
+         currency = PROJECT_CURRENCY,
+         goal = GOAL_IN_ORIGINAL_CURRENCY,
+         pledged = PLEDGED_IN_ORIGINAL_CURRENCY,
+         goal_usd = as.double(gsub("[$,]","",GOAL_IN_USD)),
+         pledged_usd = as.double(gsub("[$,]","",PLEDGED_IN_USD)),
+         backers = BACKERS_COUNT,
+         state = STATE,
+         raised_frac = pledged/goal,
+         .keep = "none") %>% 
+  filter(goal > 0)
+
+```
+
+
+```{r exchange rates}
+
+usd_exchange = read_csv("data/Exchange_Rate_Report_IMF.csv") %>% 
+  mutate(month = floor_date(dmy(Date), "month"), .keep = "unused") %>% 
+  group_by(month) %>% 
+  summarise(across(.cols = everything(), ~ mean(.x, na.rm = TRUE)))
+
+currency_names = str_extract(str_extract(colnames(usd_exchange), "\\(.*\\)"), "[A-Z]{3}")
+i_currency = match(ig_data$currency, currency_names)
+i_month = match(floor_date(ig_data$open_date, unit = "month"), usd_exchange$month)
+rates = as.double(data.frame(usd_exchange)[cbind(i_month, i_currency)])
+
+ig_data = ig_data %>% 
+  mutate(pledged_usd = rates*funds_raised_amount,
+         goal_usd = rates*goal)
+
+```
+
+
+```{r generalization}
+gen_lookup = read_csv("general categories.csv")
+
+ig_data = ig_data %>%
+  mutate(category_broad = slice(gen_lookup, match(category, gen_lookup$Specific))$General)
+
+ks_data = ks_data %>% 
+  mutate(category_broad = slice(gen_lookup, match(category, gen_lookup$Specific))$General)
+
+```
+
+```{r exploration}
+ks_data %>% 
+  group_by(category_broad) %>% 
+  summarize(success_rate = mean(state == "successful"),
+            mean_funding_rate = mean(raised_frac, na.rm = T),
+            median_funding_rate = median(raised_frac, na.rm = T),
+            count  = n())
+
+
+ig_data %>% 
+  group_by(category_broad) %>% 
+  summarize(success_rate = mean(state == "successful"),
+            mean_funding_rate = mean(funds_raised_percent, na.rm = T),
+            median_funding_rate = median(funds_raised_percent, na.rm = T),
+            count  = n())
+
+ig_data %>% 
+  group_by(category) %>% 
+  summarize(n(),
+            min(close_date, na.rm = T),
+            max(close_date, na.rm = T))
+
+ks_data %>% 
+  group_by(category_broad) %>% 
+  summarize(success_rate = mean(state == "successful"),
+            mean_funding_rate = mean(raised_frac),
+            median_funding_rate = median(raised_frac),
+            median_goal = median(goal_usd),
+            count  = n())
+
+
+ig_data %>% 
+  filter(is.na(open_date))
+
+```
+
+
+
+```{r category analysis}
+platform_colors = c(Kickstarter = "#04cc7b", Indiegogo = "#e41474")
+
+ks_cat_summary = ks_data %>% 
+  group_by(category_broad) %>% 
+  summarize(success_rate = mean(state == "successful"),
+            mean_funding_rate = mean(raised_frac, na.rm = T),
+            median_funding_rate = median(raised_frac, na.rm = T),
+            median_goal = median(goal_usd, na.rm = T),
+            median_raised = median(pledged_usd, na.rm = T),
+            count  = n()) %>% 
+  mutate(platform = "Kickstarter")
+
+ig_cat_summary = ig_data %>% 
+  group_by(category_broad) %>% 
+  summarize(success_rate = mean(state == "successful"),
+            mean_funding_rate = mean(funds_raised_percent, na.rm = T),
+            median_funding_rate = median(funds_raised_percent, na.rm = T),
+            median_goal = median(goal_usd, na.rm = T),
+            median_raised = median(pledged_usd, na.rm = T),
+            count  = n()) %>% 
+  mutate(platform = "Indiegogo")
+
+cat_summary = union(ks_cat_summary %>% mutate(platform = "Kickstarter"),
+                    ig_cat_summary %>% mutate(platform = "Indiegogo")) %>% 
+  filter(!(category_broad %in% c("Kickstarter Only", "Indiegogo Only")))
+
+
+ggplot(cat_summary, aes(x = category_broad)) +
+  geom_col(aes(y = median_goal, color = platform), fill = NA, position = "dodge2") +
+  geom_col(aes(y = median_funding_rate * median_goal, fill = platform), alpha = 0.5, position = "dodge2") +
+  scale_fill_manual(values = platform_colors) + scale_color_manual(values = platform_colors) +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 90))
+
+
+ggplot(cat_summary, aes(x = category_broad)) +
+  geom_col(aes(y = median_goal, color = platform), fill = NA, position = "dodge2") +
+  geom_col(aes(y = median_raised, fill = platform), alpha = 0.5, position = "dodge2") +
+  scale_fill_manual(values = platform_colors) + scale_color_manual(values = platform_colors) +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 90))
+```
+
+
+```{r funding vs goal}
+funding = bind_rows(
+  ks_data %>% 
+    select(raised_frac, goal_usd, pledged_usd) %>% 
+    mutate(platform = "Kickstarter"),
+  ig_data %>% 
+    select(raised_frac, goal_usd, pledged_usd) %>% 
+    mutate(platform = "Indiegogo")
+) %>% 
+  mutate(goal_bin = paste0("$", 10^floor(log10(goal_usd))))
+
+ks_bins = funding %>% 
+  filter(platform == "Kickstarter") %>% 
+  group_by(goal_bin) %>% 
+  summarize(mean_frac = mean(raised_frac),
+            median_frac = median(raised_frac),
+            mean_pledged = mean(pledged_usd),
+            median_pledged = median(pledged_usd),
+            count = n())
+
+
+
+
+ggplot(funding %>% filter(raised_frac < 5, goal_usd >= 10, goal_usd < 10000000), 
+       aes(x = goal_bin, y = raised_frac, fill = platform, color = platform)) +
+  geom_violin(scale = "width", na.rm = TRUE, position = "dodge", bw = 0.05) +
+  scale_color_manual(values = platform_colors) +
+  scale_fill_manual(values = platform_colors)
+
+
+ggplot(funding %>% filter(platform == "Kickstarter", raised_frac < 3), aes(x = raised_frac)) + 
+  geom_histogram(binwidth = 0.05)
+  
+
+
+```
+
+
+```{r modeling}
+
+ggplot(data = ig_data %>% slice_sample(n=5000), aes(x = goal_usd, y = raised_frac, color = category_broad)) +
+  geom_point(alpha = 0.2) +
+  scale_x_log10() + scale_y_log10()
+  
+
+```
