@@ -80,6 +80,7 @@ ig_data = ig_data %>%
   mutate(pledged_usd = rates*funds_raised_amount,
          goal_usd = rates*goal)
 
+
 ```
 
 
@@ -184,7 +185,11 @@ funding = bind_rows(
     select(raised_frac, goal_usd, pledged_usd) %>% 
     mutate(platform = "Indiegogo")
 ) %>% 
-  mutate(goal_bin = paste0("$", 10^floor(log10(goal_usd))))
+  mutate(goal_bin = paste0("$", 10^floor(log10(goal_usd))), 
+         met_goal = as.integer(raised_frac >= 1),
+         is_ks = as.integer(platform == "Kickstarter")) %>% 
+  filter(goal_usd > 0,
+         !is.infinite(goal_usd))
 
 ks_bins = funding %>% 
   filter(platform == "Kickstarter") %>% 
@@ -194,6 +199,7 @@ ks_bins = funding %>%
             mean_pledged = mean(pledged_usd),
             median_pledged = median(pledged_usd),
             count = n())
+
 
 
 
@@ -208,6 +214,55 @@ ggplot(funding %>% filter(raised_frac < 5, goal_usd >= 10, goal_usd < 10000000),
 ggplot(funding %>% filter(platform == "Kickstarter", raised_frac < 3), aes(x = raised_frac)) + 
   geom_histogram(binwidth = 0.05)
   
+
+ggplot(funding %>% filter(platform == "Kickstarter") %>% slice_sample(n=1000), 
+       aes(x = goal_usd, y = met_goal)) +
+  geom_point(alpha = 0.2) +
+  scale_x_log10()
+
+
+
+
+```
+
+```{r}
+logitmodel1 = glm(formula = met_goal ~ goal_usd*is_ks + goal_usd + is_ks, 
+                  family = "binomial",
+                  data = funding)
+
+summary(logitmodel1)
+
+logitmodel2 = glm(formula = met_goal ~ log10(goal_usd)*is_ks + log10(goal_usd) + is_ks, 
+                  family = "binomial",
+                  data = funding)
+
+summary(logitmodel2)
+
+funding_fit = funding %>% 
+  mutate(p_goal_fitted_1 = fitted(logitmodel1),
+         p_goal_fitted_2 = fitted(logitmodel2))
+
+ggplot(funding_fit,
+       aes(x = goal_usd, color = platform)) +
+  geom_line(aes(y = p_goal_fitted_1), linetype = 1) +
+  geom_line(aes(y = p_goal_fitted_2), linetype = 2) +
+  scale_x_log10() +
+  scale_color_manual(values = platform_colors)
+
+funding_fit %>% 
+  group_by(goal_bin, platform) %>% 
+  summarize(success_rate = mean(met_goal),
+            fitted_rate_1 = mean(p_goal_fitted_1),
+            fitted_rate_2 = mean(p_goal_fitted_2),
+            count = n(),
+            .groups = "keep")
+```
+
+
+```{r}
+ggplot(data = funding %>% filter(platform == "Indiegogo", met_goal == 1, raised_frac < 5),
+       aes(x = raised_frac)) +
+  geom_histogram()
 ```
 
 
