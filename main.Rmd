@@ -223,6 +223,7 @@ ggplot(funding %>% filter(platform == "Kickstarter") %>% slice_sample(n=1000),
 
 
 
+
 ```
 
 ```{r}
@@ -263,7 +264,43 @@ funding_fit %>%
 ggplot(data = funding %>% filter(platform == "Indiegogo", met_goal == 1, raised_frac < 5),
        aes(x = raised_frac)) +
   geom_histogram()
+
 ```
+
+```{r}
+logitmodel1 = glm(formula = met_goal ~ goal_usd*is_ks + goal_usd + is_ks, 
+                  family = "binomial",
+                  data = funding)
+
+summary(logitmodel1)
+
+logitmodel2 = glm(formula = met_goal ~ log10(goal_usd)*is_ks + log10(goal_usd) + is_ks, 
+                  family = "binomial",
+                  data = funding)
+
+summary(logitmodel2)
+
+funding_fit = funding %>% 
+  mutate(p_goal_fitted_1 = fitted(logitmodel1),
+         p_goal_fitted_2 = fitted(logitmodel2))
+
+ggplot(funding_fit,
+       aes(x = goal_usd, color = platform)) +
+  geom_line(aes(y = p_goal_fitted_1), linetype = 1) +
+  geom_line(aes(y = p_goal_fitted_2), linetype = 2) +
+  scale_x_log10() +
+  scale_color_manual(values = platform_colors)
+
+funding_fit %>% 
+  group_by(goal_bin, platform) %>% 
+  summarize(success_rate = mean(met_goal),
+            fitted_rate_1 = mean(p_goal_fitted_1),
+            fitted_rate_2 = mean(p_goal_fitted_2),
+            count = n(),
+            .groups = "keep")
+```
+
+
 
 
 ```{r JAGS}
