@@ -304,9 +304,78 @@ funding_fit %>%
 
 
 ```{r JAGS}
-data_jags = list(raised_frac = (funding %>% filter(platform == "Indiegogo"))$raised_frac,
-                 goal = (funding %>% filter(platform == "Indiegogo"))$goal_usd)
 
-model = jags.model("jags_model.txt", data = data_jags, n.chains = 3)
+
+model_str = "model {
+  for (i in 1:length(raised_frac)){
+    raised_frac[i] ~ dgamma(alpha_frac, beta0 + beta1*goal[i])
+  }
+  alpha_frac ~ dgamma(2, 1)
+  beta0 ~ dnorm(10, 10)
+  beta1 ~ dnorm(0, 10)
+}"
+
+data_ig_under = funding %>% 
+  filter(platform == "Indiegogo", raised_frac < 1, !is.na(goal_usd), !is.infinite(goal_usd))
+data_jags = list(raised_frac = data_ig_under$raised_frac, goal = data_ig_under$goal_usd)
+model = jags.model(textConnection(model_str), data = data_jags, n.chains = 3)
+samples_ig_under = coda.samples(model = model, variable.names = c("alpha_frac", "beta0", "beta1"), n.iter = 2e3)
+
+data_ig_met = funding %>% 
+  filter(platform == "Indiegogo", raised_frac >= 1, !is.na(goal_usd), !is.infinite(goal_usd))
+data_jags = list(raised_frac = data_ig_met$raised_frac-0.9999, goal = data_ig_met$goal_usd)
+model = jags.model(textConnection(model_str), data = data_jags, n.chains = 3)
+samples_ig_met = coda.samples(model = model, variable.names = c("alpha_frac", "beta0", "beta1"), n.iter = 2e3)
+
+data_ks_met = funding %>% 
+  filter(platform == "Kickstarter", raised_frac > 1, !is.na(goal_usd), !is.infinite(goal_usd)) %>% 
+  slice_sample(n = 25000)
+data_jags = list(raised_frac = data_ks_met$raised_frac-0.9999, goal = data_ks_met$goal_usd)
+model = jags.model(textConnection(model_str), data = data_jags, n.chains = 3)
+samples_ks_met = coda.samples(model = model, variable.names = c("alpha_frac", "beta0", "beta1"), n.iter = 2e3)
+
+
+data_ks_under = funding %>% 
+  filter(platform == "Kickstarter", raised_frac < 1, !is.na(goal_usd), !is.infinite(goal_usd)) %>% 
+  slice_sample(n = 25000)
+data_jags = list(raised_frac = data_ks_under$raised_frac+0.0001, goal = data_ks_met$goal_usd)
+model = jags.model(textConnection(model_str), data = data_jags, n.chains = 3)
+samples_ks_under = coda.samples(model = model, variable.names = c("alpha_frac", "beta0", "beta1"), n.iter = 2e3)
+```
+
+```{r compiling results}
+compile_runs = function(samples){
+  data = samples[[1]]
+  for(i in 2:length(samples)){
+    data = rbind(data, samples[[i]])
+  }
+  return(data)
+}
+
+x = compile_runs(samples_ig_under)
+
+
+```
+
+
+
+```{r bayesian analytical}
+alpha_jags = 5.300e-01
+
+n = nrow(data_ig_under)
+
+alpha0 = n*alpha_jags + 1
+beta0 = 1 + (sum(data_ig_under$raised_frac))
+
+beta_expected = alpha0/beta0 
+
+ggplot() +
+  geom_histogram(aes(x = rgamma(n, 2, beta_expected)))
+
+ggplot() +
+  geom_histogram(aes(x = rgamma(n, 0.53, 2.847)))
+
+ggplot(data_ig_under, aes(x = raised_frac)) +
+  geom_histogram()
 
 ```
