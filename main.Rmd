@@ -191,17 +191,6 @@ funding = bind_rows(
   filter(goal_usd > 0,
          !is.infinite(goal_usd))
 
-ks_bins = funding %>% 
-  filter(platform == "Kickstarter") %>% 
-  group_by(goal_bin) %>% 
-  summarize(mean_frac = mean(raised_frac),
-            median_frac = median(raised_frac),
-            mean_pledged = mean(pledged_usd),
-            median_pledged = median(pledged_usd),
-            count = n())
-
-
-
 
 
 ggplot(funding %>% filter(raised_frac < 5, goal_usd >= 10, goal_usd < 10000000), 
@@ -226,37 +215,18 @@ ggplot(funding %>% filter(platform == "Kickstarter") %>% slice_sample(n=1000),
 
 ```
 
-```{r}
-logitmodel1 = glm(formula = met_goal ~ goal_usd*is_ks + goal_usd + is_ks, 
+```{r logistic regression}
+logitmodel = glm(formula = met_goal ~ log10(goal_usd)*is_ks + log10(goal_usd) + is_ks, 
                   family = "binomial",
                   data = funding)
 
-summary(logitmodel1)
+summary(logitmodel)
 
-logitmodel2 = glm(formula = met_goal ~ log10(goal_usd)*is_ks + log10(goal_usd) + is_ks, 
-                  family = "binomial",
-                  data = funding)
+logitmodel$coefficients
 
-summary(logitmodel2)
+p_met_coeffs_ig = logitmodel$coefficients[1:2]
+p_met_coeffs_ks = p_met_coeffs_ig + logitmodel$coefficients[3:4]
 
-funding_fit = funding %>% 
-  mutate(p_goal_fitted_1 = fitted(logitmodel1),
-         p_goal_fitted_2 = fitted(logitmodel2))
-
-ggplot(funding_fit,
-       aes(x = goal_usd, color = platform)) +
-  geom_line(aes(y = p_goal_fitted_1), linetype = 1) +
-  geom_line(aes(y = p_goal_fitted_2), linetype = 2) +
-  scale_x_log10() +
-  scale_color_manual(values = platform_colors)
-
-funding_fit %>% 
-  group_by(goal_bin, platform) %>% 
-  summarize(success_rate = mean(met_goal),
-            fitted_rate_1 = mean(p_goal_fitted_1),
-            fitted_rate_2 = mean(p_goal_fitted_2),
-            count = n(),
-            .groups = "keep")
 ```
 
 
@@ -303,7 +273,7 @@ funding_fit %>%
 
 
 
-```{r JAGS}
+```{r JAGS eval=FALSE}
 
 
 model_str = "model {
@@ -349,15 +319,116 @@ compile_runs = function(samples){
   for(i in 2:length(samples)){
     data = rbind(data, samples[[i]])
   }
-  return(data)
+  return(as.data.frame(apply(as.data.frame(data), 2, quantile, c(0.025, 0.5, 0.975))))
 }
 
-x = compile_runs(samples_ig_under)
+params_ig_under = compile_runs(samples_ig_under)
+params_ig_met = compile_runs(samples_ig_met)
+params_ks_under = compile_runs(samples_ks_under)
+params_ks_met = compile_runs(samples_ks_met)
 
+params_all = rbind(params_ig_under["50%",], params_ig_met["50%",], params_ks_under["50%",], params_ks_met["50%",])
+row.names(params_all) = c("ig_under","ig_met","ks_under","ks_met")
+params_all[c("ig_under","ks_under"),"alpha_frac"]
 
 ```
 
 
+```{r summarize model}
+full_logitmodel = rbind(p_met_coeffs_ks, p_met_coeffs_ig)
+params_under = params_all[c("ks_under","ig_under"),]
+params_met = params_all[c("ks_met","ig_met"),]
+full_model = data.frame(row.names = c("Kickstarter", "Indiegogo"), 
+                        c0 = full_logitmodel[,1], 
+                        c1 = full_logitmodel[,2],
+                        alpha_under = params_under[,"alpha_frac"],
+                        alpha_met = params_met[,"alpha_frac"],
+                        beta0_under = params_under[,"beta0"],
+                        beta0_met = params_met[,"beta0"],
+                        beta1_under = params_under[,"beta1"],
+                        beta1_met = params_met[,"beta1"])
+
+full_model
+
+write_csv(full_model, "model_fit.csv")
+
+```
+
+
+```{r applying fit params}
+pfrac = function(frac, goal, params){
+  # Finds the probability of getting under a certain fraction of the funding goal
+  mean_params = params["50%",]
+  return(pgamma(frac, mean_params$alpha_frac, mean_params$beta0 + mean_params$beta1*goal))
+}
+
+qfrac = function(quantiles, goal, params){
+  mean_params = params["50%",]
+  return(qgamma(quantiles, mean_params$alpha_frac, mean_params$beta0 + mean_params$beta1*goal))
+}
+
+p_target = function(target, goal, model, platform){
+  # Probability of raising at least a target number given a goal
+  frac = target/goal
+  params = model[platform,]
+  p_met = 1/(1+exp(-params$c0-params$c1*log10(goal)))
+  is_under = target < goal
+  cdf_under = is_under*pgamma(frac, 
+                              params$alpha_under, 
+                              params$beta0_under+params$beta1_under*goal, 
+                              lower.tail = FALSE)
+  cdf_met = is_under + (1-is_under)*pgamma(frac-1, 
+                                           params$alpha_met, 
+                                           params$beta0_met+params$beta1_met*goal, 
+                                           lower.tail = FALSE)
+
+  #print(c(p_met, cdf_under, cdf_met))
+  if(platform == "Kickstarter"){
+    return(p_met*cdf_met)
+  }else(
+    return(p_met*cdf_met + (1-p_met)*cdf_under)
+  )
+}
+
+
+
+optimal_goal = function(target, model, platform, max_ratio = 100, margin = 1){
+  # Finds the goal that maximizes odds of raising at least as much money as the target
+  low = 0
+  high = target*max_ratio
+  while(high-low > margin){
+    mid = (low+high)/2
+    lower = (low+mid)/2
+    higher = (mid+high)/2
+    p_lower = p_target(target, lower, model, platform)
+    p_higher = p_target(target, higher, model, platform)
+    print(paste(low, round(p_lower, 5), mid))
+    print(paste(mid, round(p_higher, 5), high))
+    print("")
+    if(p_lower > p_higher){
+      high = mid
+    } else{
+      low = mid
+    }
+  }
+  return((low+high)/2)
+}
+
+```
+
+```{r}
+goal = 100000
+goal * qfrac(c(0.25,0.75), goal, params_ks_met)
+
+p_target(500, 781, full_model, "Kickstarter")
+
+optimal_goal(500, full_model, "Kickstarter")
+
+x = (0:100)*100
+y = p_target(8000, x, full_model, "Kickstarter")
+plot(x,y)
+
+```
 
 ```{r bayesian analytical}
 alpha_jags = 5.300e-01
