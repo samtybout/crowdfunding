@@ -38,6 +38,16 @@ ig_data = ig_data %>%
 
 ```
 
+```{r utility functions}
+
+as_dollar_str = function(n){
+  return(paste0("$",format(n, scientific = FALSE, big.mark = ",", trim = TRUE)))
+}
+
+as_dollar_str(10^(1:7))
+
+```
+
 ```{r clean_ks_data}
 
 ks_data = read_csv("data/ICPSR_ks.csv")
@@ -185,7 +195,7 @@ funding = bind_rows(
     select(raised_frac, goal_usd, pledged_usd) %>% 
     mutate(platform = "Indiegogo")
 ) %>% 
-  mutate(goal_bin = paste0("$", 10^floor(log10(goal_usd))), 
+  mutate(goal_bin = as_dollar_str(10^floor(log10(goal_usd))), 
          met_goal = as.integer(raised_frac >= 1),
          is_ks = as.integer(platform == "Kickstarter")) %>% 
   filter(goal_usd > 0,
@@ -390,30 +400,6 @@ p_target = function(target, goal, model, platform){
   )
 }
 
-
-
-optimal_goal = function(target, model, platform, max_ratio = 100, margin = 1){
-  # Finds the goal that maximizes odds of raising at least as much money as the target
-  low = 0
-  high = target*max_ratio
-  while(high-low > margin){
-    mid = (low+high)/2
-    lower = (low+mid)/2
-    higher = (mid+high)/2
-    p_lower = p_target(target, lower, model, platform)
-    p_higher = p_target(target, higher, model, platform)
-    print(paste(low, round(p_lower, 5), mid))
-    print(paste(mid, round(p_higher, 5), high))
-    print("")
-    if(p_lower > p_higher){
-      high = mid
-    } else{
-      low = mid
-    }
-  }
-  return((low+high)/2)
-}
-
 ```
 
 ```{r}
@@ -424,10 +410,28 @@ p_target(500, 781, full_model, "Kickstarter")
 
 optimal_goal(500, full_model, "Kickstarter")
 
-x = (0:100)*100
+goal = (0:100)*100
 y = p_target(8000, x, full_model, "Kickstarter")
 plot(x,y)
 
+
+data = data.frame()
+for(i in 2:7){
+  goal = 10^i
+  target = goal*(0:300)/100
+  p = p_target(target, goal, full_model, "Indiegogo")
+  data = rbind(data,
+               data.frame(p = p_target(target, goal, full_model, "Indiegogo"), 
+                          frac = target/goal, platform = "Indiegogo", goal = factor(as_dollar_str(goal))),
+               data.frame(p = p_target(target, goal, full_model, "Kickstarter"), 
+                          frac = target/goal, platform = "Kickstarter", goal = factor(as_dollar_str(goal))))
+}
+
+
+ggplot(data, aes(x = frac, y = p, color = platform)) +
+  geom_line() +
+  scale_color_manual(values = platform_colors) +
+  facet_wrap(vars(goal))
 ```
 
 ```{r bayesian analytical}
