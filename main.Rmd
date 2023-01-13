@@ -323,7 +323,7 @@ model = jags.model(textConnection(model_str), data = data_jags, n.chains = 3)
 samples_ks_under = coda.samples(model = model, variable.names = c("alpha_frac", "beta0", "beta1"), n.iter = 2e3)
 ```
 
-```{r compiling results}
+```{r compiling results eval=FALSE}
 compile_runs = function(samples){
   data = samples[[1]]
   for(i in 2:length(samples)){
@@ -344,7 +344,7 @@ params_all[c("ig_under","ks_under"),"alpha_frac"]
 ```
 
 
-```{r summarize model}
+```{r summarize model eval=FALSE}
 full_logitmodel = rbind(p_met_coeffs_ks, p_met_coeffs_ig)
 params_under = params_all[c("ks_under","ig_under"),]
 params_met = params_all[c("ks_met","ig_met"),]
@@ -365,7 +365,16 @@ write_csv(full_model, "model_fit.csv")
 ```
 
 
-```{r applying fit params}
+```{r load mcmc fit from file}
+
+full_model = as.data.frame(read_csv("model_fit.csv"))
+row.names(full_model) = c("Kickstarter", "Indiegogo")
+
+```
+
+
+
+```{r functions for applying fit}
 pfrac = function(frac, goal, params){
   # Finds the probability of getting under a certain fraction of the funding goal
   mean_params = params["50%",]
