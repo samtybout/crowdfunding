@@ -69,9 +69,7 @@ ks_data = read_csv("data/ICPSR_ks.csv", show_col_types = FALSE) %>%
 ```
 
 ```{r}
-print("Indiegogo")
 glimpse(ig_data)
-print("Kickstarter")
 glimpse(ks_data)
 ```
 
@@ -82,7 +80,7 @@ Some things to note here:
 
 ```{r currency}
 # Load data on exchange rates
-usd_exchange = read_csv("data/Exchange_Rate_Report_IMF.csv") %>% 
+usd_exchange = read_csv("data/Exchange_Rate_Report_IMF.csv", show_col_types = FALSE) %>% 
   # There aren't data for every day, so I calculated monthly averages
   mutate(month = floor_date(dmy(Date), "month"), .keep = "unused") %>% 
   group_by(month) %>% 
@@ -111,7 +109,7 @@ I noticed that most categories in the Indiegogo data had exactly 840 projects; W
 
 ```{r generalization}
 # Load the general category lookup table I created
-gen_lookup = read_csv("general categories.csv")
+gen_lookup = read_csv("general categories.csv", show_col_types = FALSE)
 
 # Assign a broader category to each project
 ig_data = ig_data %>%
@@ -127,6 +125,7 @@ ks_data = ks_data %>%
 # I got these colors using a hexadecimal color picking tool and screenshots of the website logos
 platform_colors = c(Kickstarter = "#04cc7b", Indiegogo = "#e41474")
 
+# Summarize funding by category
 ks_cat_summary = ks_data %>% 
   group_by(category_broad) %>% 
   summarize(success_rate = mean(state == "successful"),
@@ -157,6 +156,13 @@ ggplot(cat_summary, aes(x = category_broad)) +
   geom_col(aes(y = median_funding_rate * median_goal, fill = platform), alpha = 0.5, position = "dodge2") +
   scale_fill_manual(values = platform_colors) + scale_color_manual(values = platform_colors) +
   theme_minimal() + 
-  theme(axis.text.x = element_text(angle = 90)) +
-  xlab("Category") + ylab("Goal (USD)") + ggtitle("")
+  theme(axis.text.x = element_text(angle = 45, vjust = 1.1, hjust = 1.1, debug = F)) +
+  xlab("Category") + ylab("Goal (USD)") + 
+  ggtitle("Median Project Goal And Funding Rate By Category")
 ```
+
+This is a breakdown of project success by category. The bar outlines show the median funding goal for each category, and the fill represents the median percent funding for each category (for example, if the bar is all the way full, then the median project in that category met its funding goal). A few observations:
+
+* Most projects do not meet their funding goal. This is especially true for projects with large goals.
+* Smaller projects appear to fare better on Kickstarter, while larger projects raise more money on Indiegogo.
+* Indiegogo projects are generally more ambitious; this is probably due to a difference in funding rules, which I'll get into shortly.
