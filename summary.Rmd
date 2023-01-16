@@ -215,7 +215,7 @@ ggplot(funding %>% filter(raised_frac < 5, goal_usd >= 1e2, goal_usd < 1e7),
 ```
 
 
-This violin plot shows the money that projects raised as a percent of their stated goal. The width of each shape is proportional to how many projects raised that percent of their goal.
+This violin plot shows the money that projects raised as a percent of their stated goal. The width of a shape varies in proportion to how many projects raised that percent of their goal.
 
 We can see a few things here:
 
@@ -237,14 +237,25 @@ logitmodel = glm(formula = met_goal ~ log10(goal_usd)*is_ks + log10(goal_usd) + 
                   family = "binomial",
                   data = funding)
 
-summary(logitmodel)
 
 # I save the model coefficients here for use in the full model later
 p_met_coeffs_ig = logitmodel$coefficients[1:2]
 p_met_coeffs_ks = p_met_coeffs_ig + logitmodel$coefficients[3:4]
-```
 
-```{r plotting logistic regression}
+summary(logitmodel)
+
+```
+The fitted coefficients can be interpreted as follows:
+
+* `Intercept`: This affects a project's basic chance to hit its goal, regardless of what that goal is or what platform it's on. The value here is pretty insignificant.
+* `log10(goal_usd)`: This is the relationship between the size of the goal and the chances of hitting it. The negative value means that higher goals have lower odds.
+* `is_ks` This affects the difference in odds between Kickstarter and Indiegogo. The large positive value means that, without considering the goal, Kickstarter projects are much more likely to succeed.
+* `log10(goal_usd):is_ks`: This is the interaction between goal and platform; the negative value means that large goals are a bigger hindrance for Kickstarter projects than for Indiegogo projects.
+
+Aside from the intercept, the coefficients have very high significance. This doesn't mean the model is a perfect fit for the data, only that these are the best coefficients for the model. Here's a plot of the model fit:
+
+
+```{r warning=FALSE}
 
 funding_fit = funding %>% 
   mutate(p_goal_fitted = fitted(logitmodel))
@@ -260,6 +271,144 @@ ggplot(data = funding_fit %>%
   scale_color_manual(values = platform_colors) +
   facet_wrap(vars(platform)) +
   xlab("Goal (USD)") + ylab("Probability of hitting goal") + 
-  ggtitle("Logistic regression of funding probability")
+  ggtitle("Logistic regression of funding probability") +
+  theme(legend.position = "none")
 
 ```
+
+
+The lines show the fitted probability of a project meeting its goal, and the dots show a sample of the data. Dots at the top are projects that met their funding goal and dots and the bottom are projects that missed their goal. The fit here suggests that projects with low goals have much better odds on Kickstarter.
+
+#### Money raised
+
+The second part of the model predicts how much money a project will raise, based on whether or not it meets its goal and what that goal is. The data are clearly right-skewed, so I modeled this as a [Gamma distribution](https://en.wikipedia.org/wiki/Gamma_distribution) where the rate parameter is proportional to the goal.
+
+In an effort to melt my computer, I ran this as a Bayesian model using a package called rjags. I split the data into four sets according to whether projects met their goals and what platform they were on.
+
+```{r eval=FALSE}
+# This specifies the bayesian network for JAGS
+# The prior parameters hardly matter for a data set this large
+model_str = "model {
+  for (i in 1:length(raised_frac)){
+    raised_frac[i] ~ dgamma(alpha_frac, beta0 + beta1*goal[i])
+  }
+  alpha_frac ~ dgamma(2, 1)
+  beta0 ~ dnorm(10, 10)
+  beta1 ~ dnorm(0, 10)
+}"
+
+# These analyses took a few hours combined
+
+# Indiegogo projects that failed to reach their goal
+data_ig_under = funding %>% 
+  filter(platform == "Indiegogo", raised_frac < 1, !is.na(goal_usd), !is.infinite(goal_usd))
+data_jags = list(raised_frac = data_ig_under$raised_frac, goal = data_ig_under$goal_usd)
+model = jags.model(textConnection(model_str), data = data_jags, n.chains = 3)
+samples_ig_under = coda.samples(model = model, variable.names = c("alpha_frac", "beta0", "beta1"), n.iter = 2e3)
+
+# Indiegogo projects that met their goal
+data_ig_met = funding %>% 
+  filter(platform == "Indiegogo", raised_frac >= 1, !is.na(goal_usd), !is.infinite(goal_usd))
+data_jags = list(raised_frac = data_ig_met$raised_frac-0.9999, goal = data_ig_met$goal_usd)
+model = jags.model(textConnection(model_str), data = data_jags, n.chains = 3)
+samples_ig_met = coda.samples(model = model, variable.names = c("alpha_frac", "beta0", "beta1"), n.iter = 2e3)
+
+# I managed to crash my computer by attempting to run the model on the whole Kickstarter data set. I ended up taking a sample of 25,000 projects to roughly match the size of the Indiegogo data.
+
+# Kickstarter projects that failed to reach their goal
+data_ks_under = funding %>% 
+  filter(platform == "Kickstarter", raised_frac < 1, !is.na(goal_usd), !is.infinite(goal_usd)) %>% 
+  slice_sample(n = 25000)
+data_jags = list(raised_frac = data_ks_under$raised_frac+0.0001, goal = data_ks_met$goal_usd)
+model = jags.model(textConnection(model_str), data = data_jags, n.chains = 3)
+samples_ks_under = coda.samples(model = model, variable.names = c("alpha_frac", "beta0", "beta1"), n.iter = 2e3)
+
+# Kickstarter projects that met their goal
+data_ks_met = funding %>% 
+  filter(platform == "Kickstarter", raised_frac > 1, !is.na(goal_usd), !is.infinite(goal_usd)) %>% 
+  slice_sample(n = 25000)
+data_jags = list(raised_frac = data_ks_met$raised_frac-0.9999, goal = data_ks_met$goal_usd)
+model = jags.model(textConnection(model_str), data = data_jags, n.chains = 3)
+samples_ks_met = coda.samples(model = model, variable.names = c("alpha_frac", "beta0", "beta1"), n.iter = 2e3)
+```
+
+The funds raised (as a fraction of the goal) were modeled by a gamma distribution:
+
+$Gamma(\alpha, \beta_0+\beta_1g)$
+
+The $g$ here is the goal and the other variables are estimated by the analysis. The results are shown below:
+
+
+```{r load saved results}
+# I saved the means of the MCMC runs to a file, which I load here so I don't have to redo the JAGS analysis every time I compile this document
+full_model = as.data.frame(read_csv("model_fit.csv"))
+row.names(full_model) = c("Kickstarter", "Indiegogo")
+
+signif(full_model[,3:8], 4)
+```
+
+This is a table of the mean parameters from the Baysesian analysis. The parameters marked `under` are for projects that failed to reach their goal and those marked `met` are for those that did reach their goal.
+
+* `alpha` is a shape parameter which affects the mode of the distribution. For all of these results, the mode is close to 0.
+* `beta0` affects the scale of the distribution; higher values of Beta mean that funding results tend to be closer to the minimum (0% funded for failed projects and 100% for successful projects).
+* `beta1` affects the scale of the distribution in proportion to the project goal; higher values mean that the funding rate is lowered more for high goals. This parameter was tiny except in the case of Kickstarter projects that met their goals; for those projects, having a lower goal gives better odds of raising additional money past the goal.
+
+So what does this all mean? Let's look at a visualization:
+
+```{r warning=FALSE}
+p_target = function(target, goal, model, platform){
+  # This function gives the probability of raising at least a target number given a goal
+  
+  frac = target/goal
+  params = model[platform,]
+  
+  # Proability of meeting the goal
+  p_met = 1/(1+exp(-params$c0-params$c1*log10(goal)))
+  
+  is_under = target < goal
+  
+  # Probability of raising at least a target number, given that the goal was not met
+  cdf_under = is_under*pgamma(frac, 
+                              params$alpha_under, 
+                              params$beta0_under+params$beta1_under*goal, 
+                              lower.tail = FALSE)
+  
+  # Probability of raising at least a target number, given that the goal was met
+  cdf_met = is_under + (1-is_under)*pgamma(frac-1, 
+                                           params$alpha_met, 
+                                           params$beta0_met+params$beta1_met*goal, 
+                                           lower.tail = FALSE)
+
+  # Kickstarter projects get nothing if they don't meet their goal
+  if(platform == "Kickstarter"){
+      return(p_met*cdf_met)
+    }else(
+      return(p_met*cdf_met + (1-p_met)*cdf_under)
+    )
+}
+
+data = data.frame()
+for(i in 2:7){
+  goal = 10^i
+  target = goal*(0:300)/100
+  data = rbind(data,
+               data.frame(p = p_target(target, goal, full_model, "Indiegogo"), 
+                          frac = target/goal, platform = "Indiegogo", goal = factor(as_dollar_str(goal))),
+               data.frame(p = p_target(target, goal, full_model, "Kickstarter"), 
+                          frac = target/goal, platform = "Kickstarter", goal = factor(as_dollar_str(goal))))
+}
+
+
+ggplot(data, aes(x = frac, y = p, color = platform)) +
+  geom_line() +
+  scale_color_manual(values = platform_colors) +
+  facet_wrap(vars(goal)) +
+  scale_x_continuous(labels = scales::percent)+ 
+  xlab("Percent of goal raised") + ylab("Proability") +
+  ggtitle("Probability of raising at least a certain percent of project goal, separated by goal") +
+  theme(panel.spacing = unit(1, "lines"))
+```
+
+This shows the probability that a project will raise at least a certain percent of its goal, with each panel being a different goal. The left sides of the Kickstarter lines are flat because of Kickstarter's all-or-nothing rule; if you don't meet your goal, you get nothing, so the odds of getting anything under your goal are just the odds of missing the goal and receiving nothing.
+
+According to this model, Kickstarter is much better for projects with goals under \$10,000, and Indiegogo is better for projects with goals upwards of \$1,000,000. For goals in the middle, Kickstarter is better if really need to hit your goal, but Indiegogo might be better if any amount of money is helpful.
