@@ -6,4 +6,5 @@ data
 ICPSR_38050-V2
 scratch.R
 ks_compile.R
+summary.Rmd
 summary.html

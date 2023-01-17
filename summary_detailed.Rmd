@@ -1,0 +1,418 @@
+---
+title: "Kickstarter Versus Indiegogo"
+output: html_document
+---
+by Sam Tybout
+
+samtybout@gmail.com
+
+## An analysis of crowdfunding project success across two major platforms
+
+Crowdfunding platforms allow users to raise money for their projects by collecting small donations from anyone on the internet. The following is an analysis (using [R](https://www.r-project.org/)) of two of the most popular such platforms, [Kickstarter](https://www.kickstarter.com) and [Indiegogo](https://www.indiegogo.com). I'll be looking at how much money projects raise on each platform, and how that relates to their categories and funding goals.
+
+### The data
+
+The [data on Kickstarter projects](https://www.icpsr.umich.edu/web/NADAC/studies/38050/summary) used here come from the Inter-university Consortium for Political and Social Research. The [Indiegogo project data](https://webrobots.io/indiegogo-dataset/) are from Web Robots, a company that uses bots to scrape websites.
+
+I also made use of the International Monetary Fund's [data on exchange rates](https://www.imf.org/external/np/fin/ert/GUI/Pages/CountryDataBase.aspx) to convert currencies into US Dollars.
+
+#### Data processing
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(lubridate)
+library(stringr)
+library(tidyr)
+library(rjags)
+```
+
+
+Most of the processing and analysis was done using the [tidyverse](https://www.tidyverse.org/) family of packages.
+
+```{r load data}
+
+# Load Indiegogo data
+ig_data = read_csv("data/Indiegogo.csv", show_col_types = FALSE) %>% 
+  # Select the desired variables
+  select(category, close_date, currency, funds_raised_amount, funds_raised_percent, open_date, project_id, project_type, tags, title) %>% 
+  # I had to use regular expressions to get the dates in a legible format
+  mutate(close_date = as.Date(sub("T.*","",close_date)), 
+         open_date = as.Date(sub("T.*","",open_date)),
+         goal = funds_raised_amount/funds_raised_percent,
+         raised_frac = funds_raised_percent,
+         state = if_else(funds_raised_percent >= 1, "successful", "failed"))
+
+# Load Kickstarter data
+ks_data = read_csv("data/ICPSR_ks.csv", show_col_types = FALSE) %>% 
+  # I rename the columns here so they are consistent across both platforms
+  mutate(project_id = PID,
+         category = CATEGORY,
+         category_id = CATEGORY_ID,
+         subcategory = SUBCATEGORY,
+         subcategory_id = SUBCATEGORY_ID,
+         open_date = mdy(LAUNCHED_DATE),
+         close_date = mdy(DEADLINE_DATE),
+         currency = PROJECT_CURRENCY,
+         goal = GOAL_IN_ORIGINAL_CURRENCY,
+         pledged = PLEDGED_IN_ORIGINAL_CURRENCY,
+         # More regular expressions here so the dollar amounts can be read as numbers
+         goal_usd = as.double(gsub("[$,]","",GOAL_IN_USD)),
+         pledged_usd = as.double(gsub("[$,]","",PLEDGED_IN_USD)),
+         backers = BACKERS_COUNT,
+         state = STATE,
+         raised_frac = pledged/goal,
+         .keep = "none") %>% 
+  filter(goal > 0)
+```
+
+```{r}
+glimpse(ig_data)
+glimpse(ks_data)
+```
+
+Some things to note here:
+
+* The Indiegogo data set didn't list the funding goals for the projects. In most cases I could back-calculate this based on how much money they raised and what percent of their goal they raised; however, I couldn't do this for projects that raised absolutely no money. Those projects had to be excluded from my analysis.
+* There are 30,000 projects in the Indiegogo data and a whopping 500,000 projects in the Kickstarter data. I'm not too worried about statistical power here.
+
+```{r currency}
+# Load data on exchange rates
+usd_exchange = read_csv("data/Exchange_Rate_Report_IMF.csv", show_col_types = FALSE) %>% 
+  # There aren't data for every day, so I calculated monthly averages
+  mutate(month = floor_date(dmy(Date), "month"), .keep = "unused") %>% 
+  group_by(month) %>% 
+  summarise(across(.cols = everything(), ~ mean(.x, na.rm = TRUE)))
+
+# For some reason the IMF didn't have exchange rates for Hong Kong Dollars. Maybe this is because they track exchange rates by nation, and Hong Kong isn't a country?
+
+# This basically creates a lookup table for the USD exchange rate of each currency for each month
+currency_names = str_extract(str_extract(colnames(usd_exchange), "\\(.*\\)"), "[A-Z]{3}")
+i_currency = match(ig_data$currency, currency_names)
+# And this uses that table to find the appropriate exchange rate for each project
+i_month = match(floor_date(ig_data$open_date, unit = "month"), usd_exchange$month)
+rates = as.double(data.frame(usd_exchange)[cbind(i_month, i_currency)])
+
+# The Kickstarter data already had USD amounts, so only the Indiegogo data had to be converted
+ig_data = ig_data %>% 
+  mutate(pledged_usd = rates*funds_raised_amount,
+         goal_usd = rates*goal)
+```
+
+Every project on these platforms has a category, like "Comics" or "Technology," and I wanted to compare the relative success of projects in these categories on the two platforms. However, Kickstarter and Indiegogo don't categorize their projects the same way, so I had to assign somewhat broader categories to each project so they could be compared.
+
+Some categories on one platform didn't have a reasonable analogue on the other platform. This mostly happened with Indiegogo; they permit a wider array of projects, like community spaces and activism, which Kickstarter doesn't support. These projects were excluded from category comparisons.
+
+I noticed that most categories in the Indiegogo data had exactly 840 projects; Web Robots probably used a blocked sampling scheme. This distorts the relative frequency of the categories, but I don't think it meaningfully affects the results of my analysis.
+
+```{r generalization}
+# Load the general category lookup table I created
+gen_lookup = read_csv("general categories.csv", show_col_types = FALSE)
+
+# Assign a broader category to each project
+ig_data = ig_data %>%
+  mutate(category_broad = slice(gen_lookup, match(category, gen_lookup$Specific))$General)
+
+ks_data = ks_data %>% 
+  mutate(category_broad = slice(gen_lookup, match(category, gen_lookup$Specific))$General)
+```
+
+### Exploration
+
+```{r category analysis}
+# I got these colors using a hexadecimal color picking tool on screenshots of the website logos
+platform_colors = c(Kickstarter = "#04cc7b", Indiegogo = "#e41474")
+
+# Summarize funding by category
+ks_cat_summary = ks_data %>% 
+  group_by(category_broad) %>% 
+  summarize(success_rate = mean(state == "successful"),
+            mean_funding_rate = mean(raised_frac, na.rm = T),
+            median_funding_rate = median(raised_frac, na.rm = T),
+            median_goal = median(goal_usd, na.rm = T),
+            median_raised = median(pledged_usd, na.rm = T),
+            count  = n()) %>% 
+  mutate(platform = "Kickstarter")
+
+ig_cat_summary = ig_data %>% 
+  group_by(category_broad) %>% 
+  summarize(success_rate = mean(state == "successful"),
+            mean_funding_rate = mean(funds_raised_percent, na.rm = T),
+            median_funding_rate = median(funds_raised_percent, na.rm = T),
+            median_goal = median(goal_usd, na.rm = T),
+            median_raised = median(pledged_usd, na.rm = T),
+            count  = n()) %>% 
+  mutate(platform = "Indiegogo")
+
+cat_summary = union(ks_cat_summary %>% mutate(platform = "Kickstarter"),
+                    ig_cat_summary %>% mutate(platform = "Indiegogo")) %>% 
+  filter(!(category_broad %in% c("Kickstarter Only", "Indiegogo Only")))
+
+
+ggplot(cat_summary, aes(x = category_broad)) +
+  geom_col(aes(y = median_goal, color = platform), fill = NA, position = "dodge2") +
+  geom_col(aes(y = median_funding_rate * median_goal, fill = platform), alpha = 0.5, position = "dodge2") +
+  scale_fill_manual(values = platform_colors) + scale_color_manual(values = platform_colors) +
+  scale_y_continuous(labels = scales::label_dollar()) +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1.1, hjust = 1.1)) +
+  xlab("Category") + ylab("Goal (USD)") + 
+  ggtitle("Median Project Goal And Funding Rate By Category")
+```
+
+This is a breakdown of project success by category. The bar outlines show the median funding goal for each category, and the fill represents the median percent funding for each category (for example, if the bar is all the way full, then the median project in that category met its funding goal). A few observations:
+
+* Most projects do not meet their funding goal. This is especially true for projects with large goals.
+* Smaller projects appear to fare better on Kickstarter, while larger projects raise more money on Indiegogo.
+* Indiegogo projects are generally more ambitious; this is probably due to a difference in funding rules, which I'll get into shortly.
+
+This tells us something about the average crowdfunding project, but we should look at the spread of values, too:
+
+```{r funding vs goal}
+as_dollar_str = function(n){
+  # This turns a number into a string representing dollar amount more legibly
+  return(paste0("$",format(n, scientific = FALSE, big.mark = ",", trim = TRUE)))
+}
+
+assign_bin = function(dollars){
+  # This function assigns a "bin" to a dollar amount based on how many digits it has
+  return(paste0(
+    as_dollar_str(10^floor(log10(dollars))),
+    "-",
+    as_dollar_str(10^(floor(log10(dollars))+1)-1)
+  ))
+}
+
+
+funding = bind_rows(
+  ks_data %>% 
+    select(raised_frac, goal_usd, pledged_usd) %>% 
+    mutate(platform = "Kickstarter"),
+  ig_data %>% 
+    select(raised_frac, goal_usd, pledged_usd) %>% 
+    mutate(platform = "Indiegogo")
+) %>% filter(goal_usd > 0,
+         !is.infinite(goal_usd)) %>% 
+  mutate(goal_bin = factor(assign_bin(goal_usd),
+                           levels = assign_bin(10^(1:6))), 
+         met_goal = as.integer(raised_frac >= 1),
+         is_ks = as.integer(platform == "Kickstarter"))
+  
+
+# I excluded projects with goals below $100 here because they only exist on Kickstarter
+ggplot(funding %>% filter(raised_frac < 5, goal_usd >= 1e2, goal_usd < 1e7), 
+       aes(x = goal_bin, y = raised_frac, fill = platform, color = platform)) +
+  geom_violin(scale = "width", na.rm = TRUE, position = "dodge", bw = 0.05) +
+  scale_color_manual(values = platform_colors) +
+  scale_fill_manual(values = platform_colors) +
+  scale_y_continuous(labels = scales::percent) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1.1, hjust = 1.1)) +
+  xlab("Goal Range (USD)") + ylab("Percent of Goal Raised") + 
+  ggtitle("Percent Funding versus Goal")
+```
+
+
+This violin plot shows the money that projects raised as a percent of their stated goal. The width of a shape varies in proportion to how many projects raised that percent of their goal.
+
+We can see a few things here:
+
+* Like the previous figure, this shows that most projects don't meet their funding goal. Here we also see that projects with higher goals hit them less often.
+* The bulges at 100% show that many projects hit their goal exactly or go just past it. This pattern is more pronounced on Kickstarter, probably due to Kickstarter's all-or-nothing funding rule. On Kickstarter, if a project fails to meet its goal, the backers get their money back and the project receives _nothing_, so there's a strong incentive for a project to push towards its goal if it's close. Indiegogo has no such rule; projects keep whatever they raise.
+
+
+### Modeling
+
+I wanted to create a model to predict how much money a project could expect to raise as a function of its goal. The challenge here was, as shown by the odd shapes in the violin plot, the funding rates of these projects don't follow any ordinary statistical distribution. I decided to build a two-part model. The first part estimates the chances of a project meeting its goal, based on the size of its goal, and the second part estimates how much money a project raises conditioned on whether it met its goal.
+
+#### Chances of meeting the goal
+
+I modeled the probability of a project hitting its goal using a basic logistic regression:
+
+```{r logistic regression}
+# The variable "is_ks" is a binary variable indicating a project's platform: 1 for Kickstarter, 0 for Indiegogo
+logitmodel = glm(formula = met_goal ~ log10(goal_usd)*is_ks + log10(goal_usd) + is_ks, 
+                  family = "binomial",
+                  data = funding)
+
+
+# I save the model coefficients here for use in the full model later
+p_met_coeffs_ig = logitmodel$coefficients[1:2]
+p_met_coeffs_ks = p_met_coeffs_ig + logitmodel$coefficients[3:4]
+
+summary(logitmodel)
+
+```
+The fitted coefficients can be interpreted as follows:
+
+* `Intercept`: This affects a project's basic chance to hit its goal, regardless of what that goal is or what platform it's on. The value here is pretty insignificant.
+* `log10(goal_usd)`: This is the relationship between the size of the goal and the chances of hitting it. The negative value means that higher goals have lower odds.
+* `is_ks` This affects the difference in odds between Kickstarter and Indiegogo. The large positive value means that, without considering the goal, Kickstarter projects are much more likely to succeed.
+* `log10(goal_usd):is_ks`: This is the interaction between goal and platform; the negative value means that large goals are a bigger hindrance for Kickstarter projects than for Indiegogo projects.
+
+Aside from the intercept, the coefficients have very high significance. This doesn't mean the model is a perfect fit for the data, only that these are the best coefficients for the model. Here's a plot of the model fit:
+
+
+```{r warning=FALSE}
+
+funding_fit = funding %>% 
+  mutate(p_goal_fitted = fitted(logitmodel))
+
+ggplot(data = funding_fit %>%
+         # I took a sample of the data for this plot so individual points would be more visible
+         # The sample is weighted in favor of Indiegogo to compensate for the smaller data set
+         slice_sample(n = 5000, weight_by = 10^(1-is_ks)), 
+       aes(x = goal_usd)) +
+  geom_point(aes(y = met_goal, color = platform), alpha = 0.1) +
+  geom_line(aes(y = p_goal_fitted, color = platform)) +
+  scale_x_log10(labels = scales::label_dollar(), limits = c(1e2, 1e7)) +
+  scale_color_manual(values = platform_colors) +
+  facet_wrap(vars(platform)) +
+  xlab("Goal (USD)") + ylab("Probability of hitting goal") + 
+  ggtitle("Logistic regression of funding probability") +
+  theme(legend.position = "none")
+
+```
+
+
+The lines show the fitted probability of a project meeting its goal, and the dots show a sample of the data. Dots at the top are projects that met their funding goal and dots and the bottom are projects that missed their goal. The fit here suggests that projects with low goals have much better odds on Kickstarter.
+
+#### Money raised
+
+The second part of the model predicts how much money a project will raise, based on whether or not it meets its goal and what that goal is. The data are clearly right-skewed, so I modeled this as a [Gamma distribution](https://en.wikipedia.org/wiki/Gamma_distribution) where the rate parameter is proportional to the goal.
+
+In an effort to melt my computer, I ran this as a Bayesian model using a package called rjags. I split the data into four sets according to whether projects met their goals and what platform they were on.
+
+```{r eval=FALSE}
+# This specifies the bayesian network for JAGS
+# The prior parameters hardly matter for a data set this large
+model_str = "model {
+  for (i in 1:length(raised_frac)){
+    raised_frac[i] ~ dgamma(alpha_frac, beta0 + beta1*goal[i])
+  }
+  alpha_frac ~ dgamma(2, 1)
+  beta0 ~ dnorm(10, 10)
+  beta1 ~ dnorm(0, 10)
+}"
+
+# These analyses took a few hours combined
+
+# Indiegogo projects that failed to reach their goal
+data_ig_under = funding %>% 
+  filter(platform == "Indiegogo", raised_frac < 1, !is.na(goal_usd), !is.infinite(goal_usd))
+data_jags = list(raised_frac = data_ig_under$raised_frac, goal = data_ig_under$goal_usd)
+model = jags.model(textConnection(model_str), data = data_jags, n.chains = 3)
+samples_ig_under = coda.samples(model = model, variable.names = c("alpha_frac", "beta0", "beta1"), n.iter = 2e3)
+
+# Indiegogo projects that met their goal
+data_ig_met = funding %>% 
+  filter(platform == "Indiegogo", raised_frac >= 1, !is.na(goal_usd), !is.infinite(goal_usd))
+data_jags = list(raised_frac = data_ig_met$raised_frac-0.9999, goal = data_ig_met$goal_usd)
+model = jags.model(textConnection(model_str), data = data_jags, n.chains = 3)
+samples_ig_met = coda.samples(model = model, variable.names = c("alpha_frac", "beta0", "beta1"), n.iter = 2e3)
+
+# I managed to crash my computer by attempting to run the model on the whole Kickstarter data set. I ended up taking a sample of 25,000 projects to roughly match the size of the Indiegogo data.
+
+# Kickstarter projects that failed to reach their goal
+data_ks_under = funding %>% 
+  filter(platform == "Kickstarter", raised_frac < 1, !is.na(goal_usd), !is.infinite(goal_usd)) %>% 
+  slice_sample(n = 25000)
+data_jags = list(raised_frac = data_ks_under$raised_frac+0.0001, goal = data_ks_met$goal_usd)
+model = jags.model(textConnection(model_str), data = data_jags, n.chains = 3)
+samples_ks_under = coda.samples(model = model, variable.names = c("alpha_frac", "beta0", "beta1"), n.iter = 2e3)
+
+# Kickstarter projects that met their goal
+data_ks_met = funding %>% 
+  filter(platform == "Kickstarter", raised_frac > 1, !is.na(goal_usd), !is.infinite(goal_usd)) %>% 
+  slice_sample(n = 25000)
+data_jags = list(raised_frac = data_ks_met$raised_frac-0.9999, goal = data_ks_met$goal_usd)
+model = jags.model(textConnection(model_str), data = data_jags, n.chains = 3)
+samples_ks_met = coda.samples(model = model, variable.names = c("alpha_frac", "beta0", "beta1"), n.iter = 2e3)
+```
+
+The funds raised (as a fraction of the goal) were modeled by a gamma distribution:
+
+$Gamma(\alpha, \beta_0+\beta_1g)$
+
+The $g$ here is the goal and the other variables are estimated by the analysis. The results are shown below:
+
+
+```{r load saved results}
+# I saved the means of the MCMC runs to a file, which I load here so I don't have to redo the JAGS analysis every time I compile this document
+full_model = as.data.frame(read_csv("model_fit.csv"))
+row.names(full_model) = c("Kickstarter", "Indiegogo")
+
+signif(full_model[,3:8], 4)
+```
+
+This is a table of the mean parameters from the Baysesian analysis. The parameters marked `under` are for projects that failed to reach their goal and those marked `met` are for those that did reach their goal.
+
+* `alpha` is a shape parameter which affects the mode of the distribution. For all of these results, the mode is close to 0.
+* `beta0` affects the scale of the distribution; higher values of Beta mean that funding results tend to be closer to the minimum (0% funded for failed projects and 100% for successful projects).
+* `beta1` affects the scale of the distribution in proportion to the project goal; higher values mean that the funding rate is lowered more for high goals. This parameter was tiny except in the case of Kickstarter projects that met their goals; for those projects, having a lower goal gives better odds of raising additional money past the goal.
+
+So what does this all mean? Let's look at a visualization:
+
+```{r warning=FALSE}
+p_target = function(target, goal, model, platform){
+  # This function gives the probability of raising at least a target number given a goal
+  
+  frac = target/goal
+  params = model[platform,]
+  
+  # Proability of meeting the goal
+  p_met = 1/(1+exp(-params$c0-params$c1*log10(goal)))
+  
+  is_under = target < goal
+  
+  # Probability of raising at least a target number, given that the goal was not met
+  cdf_under = is_under*pgamma(frac, 
+                              params$alpha_under, 
+                              params$beta0_under+params$beta1_under*goal, 
+                              lower.tail = FALSE)
+  
+  # Probability of raising at least a target number, given that the goal was met
+  cdf_met = is_under + (1-is_under)*pgamma(frac-1, 
+                                           params$alpha_met, 
+                                           params$beta0_met+params$beta1_met*goal, 
+                                           lower.tail = FALSE)
+
+  # Kickstarter projects get nothing if they don't meet their goal
+  if(platform == "Kickstarter"){
+      return(p_met*cdf_met)
+    }else(
+      return(p_met*cdf_met + (1-p_met)*cdf_under)
+    )
+}
+
+data = data.frame()
+for(i in 2:7){
+  goal = 10^i
+  target = goal*(0:300)/100
+  data = rbind(data,
+               data.frame(p = p_target(target, goal, full_model, "Indiegogo"), 
+                          frac = target/goal, platform = "Indiegogo", goal = factor(as_dollar_str(goal))),
+               data.frame(p = p_target(target, goal, full_model, "Kickstarter"), 
+                          frac = target/goal, platform = "Kickstarter", goal = factor(as_dollar_str(goal))))
+}
+
+
+ggplot(data, aes(x = frac, y = p, color = platform)) +
+  geom_line() +
+  scale_color_manual(values = platform_colors) +
+  facet_wrap(vars(goal)) +
+  scale_x_continuous(labels = scales::percent)+ 
+  xlab("Percent of goal raised") + ylab("Proability") +
+  ggtitle("Probability of raising at least a certain percent of project goal, separated by goal") +
+  theme(panel.spacing = unit(1, "lines"))
+```
+
+This shows the probability that a project will raise at least a certain percent of its goal, with each panel being a different goal. The left sides of the Kickstarter lines are flat because of Kickstarter's all-or-nothing rule; if you don't meet your goal, you get nothing, so anything short of 100% is essentially the same.
+
+According to this model, Kickstarter is much better for projects with goals under \$10,000, and Indiegogo is better for projects with goals upwards of \$1,000,000. For goals in the middle, Kickstarter is better if really need to hit your goal, but Indiegogo might be better if any amount of money is helpful.
+
+### Conclusion
+
+In general, it seems that the amount of money a project raises has little to do with to its stated goal. Kickstarter projects can raise small amounts of money more consistently, but the platform's all-or-nothing funding rule makes it much riskier than Indiegogo for projects with large goals.
