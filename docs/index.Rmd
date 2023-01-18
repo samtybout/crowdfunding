@@ -1,6 +1,6 @@
 ---
 title: "Kickstarter Versus Indiegogo"
-output: pdf_document
+output: html_document
 ---
 by Sam Tybout
 
@@ -9,6 +9,8 @@ samtybout@gmail.com
 ## An analysis of crowdfunding project success across two major platforms
 
 Crowdfunding platforms allow users to raise money for their projects by collecting small donations from anyone on the internet. The following is an analysis (using [R](https://www.r-project.org/)) of two of the most popular such platforms, [Kickstarter](https://www.kickstarter.com) and [Indiegogo](https://www.indiegogo.com). I'll be looking at how much money projects raise on each platform, and how that relates to their categories and funding goals.
+
+This is a simplified summary of the analysis. For a more in-depth discussion with the source code included, go [here](summary_detailed.html).
 
 ### The data
 
@@ -33,7 +35,7 @@ library(rjags)
 ```{r load data, include=FALSE}
 
 # Load Indiegogo data
-ig_data = read_csv("data/Indiegogo.csv", show_col_types = FALSE) %>% 
+ig_data = read_csv("../data/Indiegogo.csv", show_col_types = FALSE) %>% 
   # Select the desired variables
   select(category, close_date, currency, funds_raised_amount, funds_raised_percent, open_date, project_id, project_type, tags, title) %>% 
   # I had to use regular expressions to get the dates in a legible format
@@ -44,7 +46,7 @@ ig_data = read_csv("data/Indiegogo.csv", show_col_types = FALSE) %>%
          state = if_else(funds_raised_percent >= 1, "successful", "failed"))
 
 # Load Kickstarter data
-ks_data = read_csv("data/ICPSR_ks.csv", show_col_types = FALSE) %>% 
+ks_data = read_csv("../data/ICPSR_ks.csv", show_col_types = FALSE) %>% 
   # I rename the columns here so they are consistent across both platforms
   mutate(project_id = PID,
          category = CATEGORY,
@@ -84,7 +86,7 @@ Some things to note here:
 
 ```{r currency, include=FALSE}
 # Load data on exchange rates
-usd_exchange = read_csv("data/Exchange_Rate_Report_IMF.csv", show_col_types = FALSE) %>% 
+usd_exchange = read_csv("../data/Exchange_Rate_Report_IMF.csv", show_col_types = FALSE) %>% 
   # There aren't data for every day, so I calculated monthly averages
   mutate(month = floor_date(dmy(Date), "month"), .keep = "unused") %>% 
   group_by(month) %>% 
@@ -111,7 +113,7 @@ Some categories on one platform didn't have a reasonable analogue on the other p
 
 ```{r generalization, include=FALSE}
 # Load the general category lookup table I created
-gen_lookup = read_csv("general categories.csv", show_col_types = FALSE)
+gen_lookup = read_csv("../general categories.csv", show_col_types = FALSE)
 
 # Assign a broader category to each project
 ig_data = ig_data %>%
@@ -328,7 +330,7 @@ samples_ks_met = coda.samples(model = model, variable.names = c("alpha_frac", "b
 
 ```{r load saved results, include=FALSE}
 # I saved the means of the MCMC runs to a file, which I load here so I don't have to redo the JAGS analysis every time I compile this document
-full_model = as.data.frame(read_csv("model_fit.csv"))
+full_model = as.data.frame(read_csv("../model_fit.csv"))
 row.names(full_model) = c("Kickstarter", "Indiegogo")
 
 signif(full_model[,3:8], 4)

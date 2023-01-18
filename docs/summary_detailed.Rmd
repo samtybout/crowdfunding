@@ -35,7 +35,7 @@ Most of the processing and analysis was done using the [tidyverse](https://www.t
 ```{r load data}
 
 # Load Indiegogo data
-ig_data = read_csv("data/Indiegogo.csv", show_col_types = FALSE) %>% 
+ig_data = read_csv("../data/Indiegogo.csv", show_col_types = FALSE) %>% 
   # Select the desired variables
   select(category, close_date, currency, funds_raised_amount, funds_raised_percent, open_date, project_id, project_type, tags, title) %>% 
   # I had to use regular expressions to get the dates in a legible format
@@ -46,7 +46,7 @@ ig_data = read_csv("data/Indiegogo.csv", show_col_types = FALSE) %>%
          state = if_else(funds_raised_percent >= 1, "successful", "failed"))
 
 # Load Kickstarter data
-ks_data = read_csv("data/ICPSR_ks.csv", show_col_types = FALSE) %>% 
+ks_data = read_csv("../data/ICPSR_ks.csv", show_col_types = FALSE) %>% 
   # I rename the columns here so they are consistent across both platforms
   mutate(project_id = PID,
          category = CATEGORY,
@@ -80,7 +80,7 @@ Some things to note here:
 
 ```{r currency}
 # Load data on exchange rates
-usd_exchange = read_csv("data/Exchange_Rate_Report_IMF.csv", show_col_types = FALSE) %>% 
+usd_exchange = read_csv("../data/Exchange_Rate_Report_IMF.csv", show_col_types = FALSE) %>% 
   # There aren't data for every day, so I calculated monthly averages
   mutate(month = floor_date(dmy(Date), "month"), .keep = "unused") %>% 
   group_by(month) %>% 
@@ -109,7 +109,7 @@ I noticed that most categories in the Indiegogo data had exactly 840 projects; W
 
 ```{r generalization}
 # Load the general category lookup table I created
-gen_lookup = read_csv("general categories.csv", show_col_types = FALSE)
+gen_lookup = read_csv("../general categories.csv", show_col_types = FALSE)
 
 # Assign a broader category to each project
 ig_data = ig_data %>%
@@ -341,7 +341,7 @@ The $g$ here is the goal and the other variables are estimated by the analysis. 
 
 ```{r load saved results}
 # I saved the means of the MCMC runs to a file, which I load here so I don't have to redo the JAGS analysis every time I compile this document
-full_model = as.data.frame(read_csv("model_fit.csv"))
+full_model = as.data.frame(read_csv("../model_fit.csv"))
 row.names(full_model) = c("Kickstarter", "Indiegogo")
 
 signif(full_model[,3:8], 4)
