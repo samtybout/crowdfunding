@@ -220,7 +220,7 @@ This violin plot shows the money that projects raised as a percent of their stat
 We can see a few things here:
 
 * Like the previous figure, this shows that most projects don't meet their funding goal. Here we also see that projects with higher goals hit them less often.
-* The bulges at %100 show that many projects hit their goal exactly or go just past it. This pattern is more pronounced on Kickstarter, probably due to Kickstarter's all-or-nothing funding rule. On Kickstarter, if a project fails to meet its goal, the backers get their money back and the project receives _nothing_, so there's a strong incentive for a project to push towards its goal if it's close. Indiegogo has no such rule; projects keep whatever they raise.
+* The bulges at 100% show that many projects hit their goal exactly or go just past it. This pattern is more pronounced on Kickstarter, probably due to Kickstarter's all-or-nothing funding rule. On Kickstarter, if a project fails to meet its goal, the backers get their money back and the project receives _nothing_, so there's a strong incentive for a project to push towards its goal if it's close. Indiegogo has no such rule; projects keep whatever they raise.
 
 
 ### Modeling
@@ -409,6 +409,10 @@ ggplot(data, aes(x = frac, y = p, color = platform)) +
   theme(panel.spacing = unit(1, "lines"))
 ```
 
-This shows the probability that a project will raise at least a certain percent of its goal, with each panel being a different goal. The left sides of the Kickstarter lines are flat because of Kickstarter's all-or-nothing rule; if you don't meet your goal, you get nothing, so the odds of getting anything under your goal are just the odds of missing the goal and receiving nothing.
+This shows the probability that a project will raise at least a certain percent of its goal, with each panel being a different goal. The left sides of the Kickstarter lines are flat because of Kickstarter's all-or-nothing rule; if you don't meet your goal, you get nothing, so anything short of 100% is essentially the same.
 
 According to this model, Kickstarter is much better for projects with goals under \$10,000, and Indiegogo is better for projects with goals upwards of \$1,000,000. For goals in the middle, Kickstarter is better if really need to hit your goal, but Indiegogo might be better if any amount of money is helpful.
+
+### Conclusion
+
+In general, it seems that the amount of money a project raises has little to do with to its stated goal. Kickstarter projects can raise small amounts of money more consistently, but its all-or-nothing funding rule makes it much riskier than Indiegogo for projects with large goals.

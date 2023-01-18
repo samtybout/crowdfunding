@@ -1,6 +1,6 @@
 ---
 title: "Kickstarter Versus Indiegogo"
-output: html_document
+output: pdf_document
 ---
 by Sam Tybout
 
@@ -65,6 +65,8 @@ ks_data = read_csv("data/ICPSR_ks.csv", show_col_types = FALSE) %>%
          .keep = "none") %>% 
   filter(goal > 0)
 ```
+
+
 
 Here's a look at the data:
 

@@ -8,3 +8,5 @@ scratch.R
 ks_compile.R
 summary.Rmd
 summary.html
+*.log
+*.tex
